@@ -178,16 +178,16 @@ class Network:
 
         return output_img
 
-    def _process_patches(self, patches: np.ndarray, show_progress: bool = False) -> np.ndarray:
+    def _process_patches(self, patches: np.ndarray, show_progress: bool = False, batch_size: int = 1) -> list[np.ndarray]:
         """
         Process patches through the TFLite interpreter.
 
         Args:
             patches: Array of patches to process, shape (n_patches, PATCH_SIZE, PATCH_SIZE, 3)
             show_progress: Whether to show a progress bar (default: False)
-
+            batch_size: Number of patches to process in each batch (default: 1)
         Returns:
-            Processed patches array with same shape as input
+            List of processed patches with same shape as input
         """
         # Get input and output tensors
         input_details = self.interpreter.get_input_details()
@@ -196,37 +196,58 @@ class Network:
         # Check if model is quantized (INT8)
         is_quantized = input_details[0]['dtype'] == np.int8
 
-        # Process patches one by one for TFLite
+        # Process patches in batches
         processed_patches = []
-        patch_iter = tqdm(patches, desc="Denoising patches") if show_progress else patches
-        for patch in patch_iter:
+        total_patches = len(patches)
+
+        # Create progress bar if requested
+        if show_progress:
+            pbar = tqdm(total=total_patches, desc="Denoising patches")
+
+        # Process patches in batches
+        for i in range(0, total_patches, batch_size):
+            end_idx = min(i + batch_size, total_patches)
+            batch = np.array(patches[i:end_idx])
+            current_batch_size = end_idx - i
+
             # Scale input for INT8 models
             if is_quantized:
                 input_scale = input_details[0]['quantization'][0]
                 input_zero_point = input_details[0]['quantization'][1]
-                patch = patch / input_scale + input_zero_point
-                patch = np.array(patch).astype(np.int8)
+                batch = (batch / input_scale + input_zero_point).astype(np.int8)
 
-            # Set input tensor
-            self.interpreter.set_tensor(input_details[0]['index'], np.expand_dims(patch, 0))
+            # Try batch processing first, fall back to individual processing if batch size mismatch
+            try:
+                self.interpreter.set_tensor(input_details[0]['index'], batch)
+                self.interpreter.invoke()
+                output = list(self.interpreter.get_tensor(output_details[0]['index']))
 
-            # Run inference
-            self.interpreter.invoke()
-
-            # Get output tensor
-            output = self.interpreter.get_tensor(output_details[0]['index'])
+            except Exception:
+                # Fall back to individual processing if batch processing fails
+                output = []
+                for patch in batch:
+                    self.interpreter.set_tensor(input_details[0]['index'], np.expand_dims(patch, 0))
+                    self.interpreter.invoke()
+                    output.append(self.interpreter.get_tensor(output_details[0]['index'])[0])
 
             # De-scale output for INT8 models
             if is_quantized:
                 output_scale = output_details[0]['quantization'][0]
                 output_zero_point = output_details[0]['quantization'][1]
-                output = (output.astype(np.float32) - output_zero_point) * output_scale
+                output = list((np.array(output).astype(np.float32) - output_zero_point) * output_scale)
 
-            processed_patches.append(output[0])
+            processed_patches += output
 
-        return np.array(processed_patches)
+            # Update progress bar
+            if show_progress:
+                pbar.update(current_batch_size)
 
-    def run_inference(self, image: np.ndarray, overlap_pixels: int = 16, show_progress: bool = False) -> np.ndarray:
+        if show_progress:
+            pbar.close()
+
+        return processed_patches
+
+    def run_inference(self, image: np.ndarray, overlap_pixels: int = 16, show_progress: bool = False, batch_size: int = 1) -> np.ndarray:
         """
         Break the image up into patches, run them all through the neural network model, and
         reassemble them to make the output image.
@@ -235,6 +256,7 @@ class Network:
             image: The image to run inference on, shape (height, width, channels)
             overlap_pixels: The number of pixels to overlap between patches
             show_progress: Whether to show a progress bar (default: False)
+            batch_size: Number of patches to process in each batch (default: 1)
 
         Returns:
             The output image.
@@ -244,7 +266,7 @@ class Network:
         # Break the image up into patches.
         patches = self._split_into_patches(image, patch_info)
         # Run the patches through the neural network model.
-        outputs = self._process_patches(patches, show_progress) # This is the slow part.
+        outputs = self._process_patches(patches, show_progress, batch_size) # This is the slow part.
         # Reassemble the patches to make the output image.
         output_image = self._reassemble_patches(image.shape, overlap_pixels, patch_info, outputs)
         return output_image
