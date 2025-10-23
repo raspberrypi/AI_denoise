@@ -1,4 +1,9 @@
-from ai_edge_litert.interpreter import Interpreter
+try:
+    from ai_edge_litert.interpreter import Interpreter
+except ImportError:
+    print("ai_edge_litert not found, trying tensorflow.lite.Interpreter")
+    import tensorflow as tf
+    Interpreter = tf.lite.Interpreter
 import numpy as np
 from tqdm import tqdm
 
