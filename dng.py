@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import cv2
 import argparse
-import pyexiv2
+import exifread
 import sys
 from network import Network
 from tuning import Tuning
@@ -38,10 +38,10 @@ class Dng:
 
         self.raw = rawpy.imread(str(self.dng_filename))
 
-        # rawpy doesn't read all the exif tags, so read the missing ones with pyexiv2.
-        self.exif_data = pyexiv2.ImageMetadata(str(self.dng_filename))
-        self.exif_data.read()
-        self.model = sensor if sensor else self.exif_data["Exif.Image.Model"].value
+        # rawpy doesn't read all the exif tags, so read the missing ones with exifread.
+        with open(self.dng_filename, 'rb') as f:
+            self.exif_data = exifread.process_file(f, details=True)
+        self.model = sensor if sensor else self.exif_data["Image Model"].values
         # Some Picamera2 DNG files won't have a valid sensor recorded.
         if not sensor and self.model == "PiDNG / PiCamera2":
             raise ValueError("Sensor model not found in the DNG file - try the -s option to specify it")
@@ -105,11 +105,11 @@ class Dng:
         # Start by getting the original file's strip offset. We may be dealing with SubImage1
         # (files from rpicam-still) or just the Image (Picamera2).
         try:
-            start_offset = self.exif_data["Exif.SubImage1.StripOffsets"].value
-            length = self.exif_data["Exif.SubImage1.StripByteCounts"].value
+            start_offset = self.exif_data["EXIF SubIFD0 StripOffsets"].values[0]
+            length = self.exif_data["EXIF SubIFD0 StripByteCounts"].values[0]
         except KeyError:
-            start_offset = self.exif_data["Exif.Image.StripOffsets"].value
-            length = self.exif_data["Exif.Image.StripByteCounts"].value
+            start_offset = self.exif_data["Image StripOffsets"].values[0]
+            length = self.exif_data["Image StripByteCounts"].values[0]
         if self.raw_array.nbytes > length:
             raise ValueError("Internal image size error, or maybe a multi-strip file?")
 
